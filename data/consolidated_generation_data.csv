@@ -1,0 +1,16 @@
+plant,month,energy_generated,capacity
+Bulawayo,February,85.0,
+Bulawayo,January,80.0,
+Munyati,,,0.0
+Bulawayo,,,0.0
+Harare,,,0.0
+Kariba,,,1000.0
+Hwange,,,1000.0
+Harare,February,95.0,
+Harare,January,90.0,
+Hwange,February,210.0,
+Hwange,January,200.0,
+Kariba,February,500.0,
+Kariba,January,500.0,
+Munyati,February,110.0,
+Munyati,January,100.0,
