@@ -1,6 +1,7 @@
 import pickle
 
 import numpy as np
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from flask import Flask, request, jsonify
@@ -120,74 +121,79 @@ def collect_generation_data():
 @app.route('/distribute_energy', methods=['POST'])
 def distribute_energy():
     data = request.json
-    city = data.get('city')
+    cities = data.get('cities')
     month = data.get('month')
 
     # Input validation
-    if not city or not month:
-        return jsonify({'error': 'City and month are required parameters'}), 400
+    if not cities or not month:
+        return jsonify({'error': 'Cities and month are required parameters'}), 400
 
-    # Convert month to numerical value
     try:
         month_num = pd.to_datetime(month, format='%B').month
     except ValueError:
         return jsonify({'error': 'Invalid month format'}), 400
 
-    # Predict energy consumption
-    input_data = pd.DataFrame({'city': [city], 'month': [month_num]})
+    distribution_plans = []
+    for city in cities:
+        # Predict energy consumption
+        input_data = pd.DataFrame({'city': [city], 'month': [month_num]})
+        input_data = pd.get_dummies(input_data, columns=['city'])
+        missing_features = set(model.feature_names_in_) - set(input_data.columns)
+        for feature in missing_features:
+            input_data[feature] = 0
+        input_data = input_data[model.feature_names_in_]
 
-    # Ensure consistent one-hot encoding of city names
-    input_data = pd.get_dummies(input_data, columns=['city'])
-    missing_features = set(model.feature_names_in_) - set(input_data.columns)
-    for feature in missing_features:
-        input_data[feature] = 0
+        predicted_consumption = model.predict(input_data)[0]
 
-    # Reorder columns to match the order used during model training
-    input_data = input_data[model.feature_names_in_]
+        # Load generation data
+        generation_df = pd.read_csv(consolidated_generation_file)
+        total_generated_energy = generation_df.loc[
+            (generation_df['plant'] == city) & (generation_df['month'] == month_num), 'energy_generated'
+        ].sum()
 
-    predicted_consumption = model.predict(input_data)[0]
+        # Create distribution plan
+        distribution_plan = {
+            'city': city,
+            'month': month,
+            'predicted_consumption': predicted_consumption,
+            'total_generated_energy': total_generated_energy
+        }
 
-    # Load generation data
-    generation_df = pd.read_csv(consolidated_generation_file)
-    total_generated_energy = generation_df.loc[
-        (generation_df['plant'] == city) & (generation_df['month'] == month), 'energy_generated'
-    ].sum()
-
-    # Create distribution plan
-    distribution_plan = {
-        'city': city,
-        'month': month,
-        'predicted_consumption': predicted_consumption,
-        'total_generated_energy': total_generated_energy
-    }
-
-    if total_generated_energy >= predicted_consumption:
-        distribution_plan['status'] = 'Sufficient energy available'
-    else:
-        distribution_plan['status'] = 'Insufficient energy, load shedding required'
-        distribution_plan['shortfall'] = predicted_consumption - total_generated_energy
-
-    # Allocate energy from plants
-    allocated_energy = {}
-    generation_capacities = load_generation_capacities()
-    for plant, capacity in generation_capacities.items():
         if total_generated_energy >= predicted_consumption:
-            allocated_energy[plant] = 0
+            distribution_plan['status'] = 'Sufficient energy available'
         else:
-            allocated = min(capacity, distribution_plan['shortfall'])
-            allocated_energy[plant] = int(allocated)
-            distribution_plan['shortfall'] -= allocated
+            distribution_plan['status'] = 'Insufficient energy, load shedding required'
+            distribution_plan['shortfall'] = predicted_consumption - total_generated_energy
 
-    distribution_plan['allocated_energy'] = allocated_energy
+        # Allocate energy from plants
+        allocated_energy = {}
+        generation_capacities = load_generation_capacities()
+        for plant, capacity in generation_capacities.items():
+            if total_generated_energy >= predicted_consumption:
+                allocated_energy[plant] = 0
+            else:
+                allocated = min(capacity, distribution_plan['shortfall'])
+                allocated_energy[plant] = int(allocated)
+                distribution_plan['shortfall'] -= allocated
 
-    accuracy_metrics = {
-        'Mean Absolute Error (MAE)': abs(total_generated_energy - predicted_consumption)/100,
-        'Root Mean Squared Error (RMSE)':( np.sqrt((total_generated_energy - predicted_consumption) ** 2))/100
-    }
+        distribution_plan['allocated_energy'] = allocated_energy
 
-    distribution_plan['accuracy_metrics'] = accuracy_metrics
+        # Calculate accuracy metrics
+        mae = mean_absolute_error([total_generated_energy], [predicted_consumption])
+        rmse = np.sqrt(mean_squared_error([total_generated_energy], [predicted_consumption]))
 
-    return jsonify(distribution_plan)
+        mae_percentage = (mae / total_generated_energy) * 100 if total_generated_energy != 0 else 0
+        rmse_percentage = (rmse / total_generated_energy) * 100 if total_generated_energy != 0 else 0
+
+        accuracy_metrics = {
+            'Mean Absolute Error (MAE) Percentage': mae_percentage,
+            'Root Mean Squared Error (RMSE) Percentage': rmse_percentage
+        }
+
+        distribution_plan['accuracy_metrics'] = accuracy_metrics
+        distribution_plans.append(distribution_plan)
+
+    return jsonify(distribution_plans)
 
 if __name__ == '__main__':
     app.run(debug=True)
